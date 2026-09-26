@@ -56,7 +56,7 @@ extern int drop_all_capabilities(void);
 extern int initialize_ram_lock(void);
 extern int apply_hardware_cloaking(void);
 extern int setup_display_environment(void);
-extern int apply_landlock_sandboxing(void);
+extern int apply_namespace_sandboxing(void);
 
 // Callback for recursive SHM workspace purging
 static int ghostbox_unlink_cb(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf) {
@@ -250,7 +250,7 @@ int main(int argc, char *argv[]) {
         trigger_xdp_killswitch();
     }
     
-    if (apply_hardware_cloaking() < 0 || setup_display_environment() < 0 || apply_landlock_sandboxing() < 0) {
+    if (apply_hardware_cloaking() < 0 || setup_display_environment() < 0 || apply_namespace_sandboxing() < 0) {
         trigger_xdp_killswitch();
     }
     
