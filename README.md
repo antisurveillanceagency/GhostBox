@@ -39,8 +39,6 @@ Usage
 Run any command or application securely inside the sandbox:
 Bash
 
-./ghostbox -h
-
 ./ghostbox firefox
 
 Display the help manual:
