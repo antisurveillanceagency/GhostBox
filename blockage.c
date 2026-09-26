@@ -182,8 +182,7 @@ int apply_seccomp_filter(void) {
 		SCMP_SYS(rt_sigqueueinfo), SCMP_SYS(name_to_handle_at), SCMP_SYS(open_by_handle_at),
 		SCMP_SYS(mq_open), SCMP_SYS(mq_unlink), SCMP_SYS(mq_timedsend), SCMP_SYS(mq_timedreceive),
 		SCMP_SYS(mq_notify), SCMP_SYS(mq_getsetattr), SCMP_SYS(msgctl), SCMP_SYS(get_thread_area),
-		SCMP_SYS(set_thread_area), SCMP_SYS(perf_event_open), SCMP_SYS(landlock_create_ruleset),
-		SCMP_SYS(landlock_add_rule), SCMP_SYS(landlock_restrict_self), SCMP_SYS(memfd_secret),
+		SCMP_SYS(set_thread_area), SCMP_SYS(perf_event_open), SCMP_SYS(memfd_secret),
 		SCMP_SYS(quotactl), SCMP_SYS(ioprio_get), SCMP_SYS(ioprio_set), SCMP_SYS(setfsuid),
 		SCMP_SYS(setfsgid)
 	};
