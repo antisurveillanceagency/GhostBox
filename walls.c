@@ -1,6 +1,6 @@
 /*
  * GhostBox - walls.c
- * Isolation, Hardware Cloaking, Landlock FS and Display Management Engine
+ * Isolation, Hardware Cloaking, Namespace FS and Display Management Engine
  */
 
 #define _GNU_SOURCE
@@ -109,6 +109,9 @@ int setup_display_environment(void) {
 		setenv("XDG_RUNTIME_DIR", xdg_runtime, 1);
 	}
 	
+	// Strict PATH environment variable sanitization
+	setenv("PATH", "/usr/local/bin:/usr/bin:/bin", 1);
+	
 	// Redirect HOME and XDG directories to /dev/shm for strict RAM-only storage (profiles, cookies, downloads)
 	setenv("HOME", "/dev/shm/ghostbox_home", 1);
 	setenv("XDG_CONFIG_HOME", "/dev/shm/ghostbox_home/.config", 1);
@@ -125,7 +128,7 @@ int setup_display_environment(void) {
 	return 0;
 }
 
-int apply_landlock_sandboxing(void) {
+int apply_namespace_sandboxing(void) {
 	int fd = open("/proc/self/setgroups", O_WRONLY);
 	if (fd >= 0) {
 		write(fd, "deny", 4);
