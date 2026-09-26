@@ -16,6 +16,9 @@
 #include <sys/stat.h>
 #include <ftw.h>
 
+// Global tracker for slirp4netns manager process
+static pid_t g_slirp_mgr = -1;
+
 // Blocked hardware and PCI paths
 static const char * const GHOSTBOX_BLOCKED_PATHS[] = {
     "/sys/bus/pci/devices",
@@ -61,6 +64,12 @@ static int ghostbox_unlink_cb(const char *fpath, const struct stat *sb, int type
 
 // Secure RAM wiper on execution, interrupt, or exit
 void secure_memory_wipe(void) {
+    if (g_slirp_mgr > 0) {
+        kill(g_slirp_mgr, SIGTERM);
+        waitpid(g_slirp_mgr, NULL, WNOHANG);
+        g_slirp_mgr = -1;
+    }
+    system("pkill -f slirp4netns >/dev/null 2>&1");
     nftw("/dev/shm/ghostbox_home", ghostbox_unlink_cb, 64, FTW_DEPTH | FTW_PHYS);
     volatile char *p = malloc(1024 * 1024);
     if (p) {
@@ -176,7 +185,24 @@ int main(int argc, char *argv[]) {
         trigger_xdp_killswitch();
     }
     
-    int clone_flags = CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWIPC | CLONE_NEWUTS;
+    int pipefd[2];
+    if (pipe(pipefd) == 0) {
+        g_slirp_mgr = fork();
+        if (g_slirp_mgr == 0) {
+            close(pipefd[1]);
+            pid_t target_pid;
+            if (read(pipefd[0], &target_pid, sizeof(target_pid)) > 0) {
+                close(pipefd[0]);
+                char pid_str[32];
+                snprintf(pid_str, sizeof(pid_str), "%d", target_pid);
+                execlp("slirp4netns", "slirp4netns", "--configure", "--mtu=65520", pid_str, "tap0", NULL);
+            }
+            _exit(1);
+        }
+        close(pipefd[0]);
+    }
+    
+    int clone_flags = CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWIPC | CLONE_NEWUTS | CLONE_NEWNET;
     
     printf("[*] GhostBox: Initializing kernel-level dual-strength namespaces...\n");
     if (unshare(clone_flags) < 0) {
@@ -210,6 +236,10 @@ int main(int argc, char *argv[]) {
         secure_memory_wipe();
         _exit(1);
     } else {
+        if (pipefd[1] >= 0) {
+            write(pipefd[1], &child_pid, sizeof(child_pid));
+            close(pipefd[1]);
+        }
         int status;
         waitpid(child_pid, &status, 0);
         // RAM wipe upon exit
