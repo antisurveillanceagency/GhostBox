@@ -16,13 +16,14 @@
 #include <sys/capability.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <ftw.h>
 #include <seccomp.h>
 
 // Blocked hardware and PCI paths enforcement reference
 static const char * const BLOCKAGE_BLOCKED_PATHS[] = {
 	"/sys/bus/pci/devices",
-	"/sys/bus/pci/devices/0000:00:1g.0/config",
+	"/sys/bus/pci/devices/0000:00:1f.0/config",
 	"/proc/bus/pci",
 	"/proc/cpuinfo",
 	"/proc/meminfo",
@@ -56,13 +57,16 @@ static int blockage_unlink_cb(const char *fpath, const struct stat *sb, int type
 // Secure RAM wiper for blockage module (upon execution, interruption, and exit)
 void blockage_secure_memory_wipe(void) {
 	nftw("/dev/shm/ghostbox_home", blockage_unlink_cb, 64, FTW_DEPTH | FTW_PHYS);
-	volatile char *p = malloc(1024 * 1024);
+	size_t alloc_size = 4 * 1024 * 1024;
+	volatile char *p = malloc(alloc_size);
 	if (p) {
-		for (size_t i = 0; i < 1024 * 1024; i++) {
+		for (size_t i = 0; i < alloc_size; i++) {
 			p[i] = 0;
 		}
+		madvise((void *)p, alloc_size, MADV_DONTNEED);
 		free((void *)p);
 	}
+	sync();
 }
 
 // Blockage XDP fail-safe killswitch trigger
@@ -116,6 +120,7 @@ int apply_seccomp_filter(void) {
 	}
 	
 	int rc = 0;
+	// Link, symlink, linkat, symlinkat deliberately excluded to eliminate binary copy/symlink attacks
 	const int syscalls[] = {
 		SCMP_SYS(read), SCMP_SYS(write), SCMP_SYS(open), SCMP_SYS(openat), SCMP_SYS(close),
 		SCMP_SYS(stat), SCMP_SYS(fstat), SCMP_SYS(lstat), SCMP_SYS(newfstatat), SCMP_SYS(statx),
