@@ -32,14 +32,16 @@ Compilation
 Build GhostBox using gcc with required security and capability flags:
 Bash
 
-gcc -O3 ghostbox.c walls.c blockage.c -o ghostbox -lseccomp -lcap
+gcc -O3 -static ghostbox.c walls.c blockage.c -lcap -lseccomp -o ghostbox
 
 Usage
 
 Run any command or application securely inside the sandbox:
 Bash
 
-./ghostbox -- firefox
+./ghostbox -h
+
+./ghostbox firefox
 
 Display the help manual:
 Bash
