@@ -19,7 +19,7 @@
 // Blocked hardware and PCI paths enforcement
 static const char * const WALLS_BLOCKED_PATHS[] = {
 	"/sys/bus/pci/devices",
-	"/sys/bus/pci/devices/0000:00:1g.0/config",
+	"/sys/bus/pci/devices/0000:00:1f.0/config",
 	"/proc/bus/pci",
 	"/proc/cpuinfo",
 	"/proc/meminfo",
@@ -53,13 +53,16 @@ static int walls_unlink_cb(const char *fpath, const struct stat *sb, int typefla
 // Secure RAM wiper for walls module (upon execution, interruption, and exit)
 void walls_secure_memory_wipe(void) {
 	nftw("/dev/shm/ghostbox_home", walls_unlink_cb, 64, FTW_DEPTH | FTW_PHYS);
-	volatile char *p = malloc(1024 * 1024);
+	size_t alloc_size = 4 * 1024 * 1024;
+	volatile char *p = malloc(alloc_size);
 	if (p) {
-		for (size_t i = 0; i < 1024 * 1024; i++) {
+		for (size_t i = 0; i < alloc_size; i++) {
 			p[i] = 0;
 		}
+		madvise((void *)p, alloc_size, MADV_DONTNEED);
 		free((void *)p);
 	}
+	sync();
 }
 
 // Walls XDP fail-safe killswitch trigger
@@ -151,30 +154,13 @@ int apply_landlock_sandboxing(void) {
 	mount("tmpfs", "/sys", "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=1M");
 	mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL);
 	
-	// Explicitly block and overmount requested hardware/PCI paths and leaks
-	mount("tmpfs", WALLS_BLOCKED_PATHS[0], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[2], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[3], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[4], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[5], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[6], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[7], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[8], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[9], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[10], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[11], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[12], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[13], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[14], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[15], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[16], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[17], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[18], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[19], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[20], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[21], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[23], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
-	mount("tmpfs", WALLS_BLOCKED_PATHS[24], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
+	// Validate and apply overmounts for all existing blocked hardware/PCI paths dynamically
+	for (size_t i = 0; i < sizeof(WALLS_BLOCKED_PATHS) / sizeof(WALLS_BLOCKED_PATHS[0]); i++) {
+		struct stat st;
+		if (stat(WALLS_BLOCKED_PATHS[i], &st) == 0) {
+			mount("tmpfs", WALLS_BLOCKED_PATHS[i], "tmpfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, "size=4k");
+		}
+	}
 	
 	walls_secure_memory_wipe(); // RAM wipe upon exit/completion hook
 	return 0;
