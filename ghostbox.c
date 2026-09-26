@@ -14,7 +14,9 @@
 #include <sys/mount.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <ftw.h>
+#include <dirent.h>
 
 // Global tracker for slirp4netns manager process
 static pid_t g_slirp_mgr = -1;
@@ -22,7 +24,7 @@ static pid_t g_slirp_mgr = -1;
 // Blocked hardware and PCI paths
 static const char * const GHOSTBOX_BLOCKED_PATHS[] = {
     "/sys/bus/pci/devices",
-    "/sys/bus/pci/devices/0000:00:1g.0/config",
+    "/sys/bus/pci/devices/0000:00:1f.0/config",
     "/proc/bus/pci",
     "/proc/cpuinfo",
     "/proc/meminfo",
@@ -69,15 +71,42 @@ void secure_memory_wipe(void) {
         waitpid(g_slirp_mgr, NULL, WNOHANG);
         g_slirp_mgr = -1;
     }
-    system("pkill -f slirp4netns >/dev/null 2>&1");
+    // Safe process termination via /proc scanning (No shell command injection)
+    DIR *dir = opendir("/proc");
+    if (dir) {
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL) {
+            if (entry->d_type == DT_DIR) {
+                pid_t pid = atoi(entry->d_name);
+                if (pid > 0 && pid != getpid()) {
+                    char path[64];
+                    snprintf(path, sizeof(path), "/proc/%d/comm", pid);
+                    FILE *f = fopen(path, "r");
+                    if (f) {
+                        char comm[256];
+                        if (fgets(comm, sizeof(comm), f)) {
+                            if (strncmp(comm, "slirp4netns", 11) == 0) {
+                                kill(pid, SIGKILL);
+                            }
+                        }
+                        fclose(f);
+                    }
+                }
+            }
+        }
+        closedir(dir);
+    }
     nftw("/dev/shm/ghostbox_home", ghostbox_unlink_cb, 64, FTW_DEPTH | FTW_PHYS);
-    volatile char *p = malloc(1024 * 1024);
+    size_t alloc_size = 4 * 1024 * 1024;
+    volatile char *p = malloc(alloc_size);
     if (p) {
-        for (size_t i = 0; i < 1024 * 1024; i++) {
+        for (size_t i = 0; i < alloc_size; i++) {
             p[i] = 0;
         }
+        madvise((void *)p, alloc_size, MADV_DONTNEED);
         free((void *)p);
     }
+    sync();
 }
 
 // 1ms XDP fail-safe killswitch trigger on startup failure, corruption, or unexpected stop
@@ -127,7 +156,7 @@ int main(int argc, char *argv[]) {
         trigger_xdp_killswitch();
     }
     
-    // Extensive command and hardware info blocklist
+    // Extensive command and hardware info blocklist (including copy/symlink and script/python dangerous flags)
     const char *blocked_cmds[] = {
         "ps", "capsh", "uname", "hostnamectl", "lshw", "hwinfo", "inxi", "lspci", 
         "lscpu", "lspcu", "lsusb", "lsblk", "lsscsi", "dmidecode", "fwupdmgr", 
@@ -135,7 +164,8 @@ int main(int argc, char *argv[]) {
         "rmmod", "modprobe", "hdparm", "fdisk", "parted", "blkid", "free", "top", 
         "htop", "neofetch", "screenfetch", "acpi", "upower", "journalctl", "lshal",
         "lsattr", "chattr", "lsinitramfs", "lsinitrd", "cpuid", "arch", "nproc", 
-        "hostname", "ip", "ifconfig", "ethtool", "host", "strace", "ptrace", "iw", "chroot", NULL
+        "hostname", "ip", "ifconfig", "ethtool", "host", "strace", "ptrace", "iw", "chroot",
+        "cp", "ln", "install", "dd", "python", "python3", "perl", "ruby", "lua", "node", NULL
     };
     
     int is_blocked = 0;
@@ -150,6 +180,16 @@ int main(int argc, char *argv[]) {
             is_blocked = 1;
         break;
             }
+    }
+    
+    // Block python/interpreter inline dangerous command execution flags (-c, -m)
+    if (!is_blocked) {
+        for (int i = optind; i < argc; i++) {
+            if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "--eval") == 0) {
+                is_blocked = 1;
+                break;
+            }
+        }
     }
     
     // Check all arguments for blocked hardware/kernel paths (e.g. cat /proc/version)
