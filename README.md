@@ -6,7 +6,7 @@ What It Does
 
 GhostBox wraps target applications in multiple layers of kernel-enforced isolation, stripping away attack surfaces and preventing hardware fingerprinting or system leakage:
 
-    Unprivileged Namespaces: Isolates processes using CLONE_NEWUSER, CLONE_NEWPID, CLONE_NEWNS, CLONE_NEWIPC, and CLONE_NEWUTS.
+    Unprivileged Namespaces: Isolates processes using CLONE_NEWUSER, CLONE_NEWPID, CLONE_NEWNS, CLONE_NEWIPC, CLONE_NEWUTS and CLONE_NEWNET.
 
     Hardware & Path Cloaking: Overmounts sensitive system paths (/sys, /proc/cpuinfo, /proc/meminfo, /boot, /dev/mem, etc.) with tmpfs and spoofs system identification.
 
