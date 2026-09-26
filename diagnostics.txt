@@ -1,0 +1,104 @@
+Bash
+
+./ghostbox -- capsh --print
+
+Audit Goal: Ensure that capability sets (Bounding, Effective, Permitted) are completely dropped or reduced to a strict minimum. If capsh isn't available, check the process status directly:
+Bash
+
+./ghostbox -- grep Cap /proc/self/status
+
+Check User/Group Namespace Mapping:
+Bash
+
+./ghostbox -- id
+./ghostbox -- cat /proc/self/uid_map
+
+Audit Goal: Verify that the root user inside the sandbox is correctly mapped to an unprivileged user ID on the host.
+
+2. Seccomp-BPF System Call Probing
+
+If GhostBox implements a Seccomp filter via blockage.c, an auditor will test whether restricted system calls are properly blocked or if they return expected errors (ENOSYS or process termination).
+
+Check if NoNewPrivs and Seccomp are active:
+Bash
+
+./ghostbox -- grep -E 'Seccomp|NoNewPrivs' /proc/self/status
+
+Expected Output: NoNewPrivs: 1 and Seccomp: 2 (or 1 depending on filter mode). If Seccomp is 0, the filter failed to apply.
+
+Test Syscall Restrictions:
+An auditor will attempt to trigger restricted system calls (such as unshare, mount, or ptrace). For example, trying to invoke unshare to build a nested namespace should immediately fail:
+Bash
+
+sudo sysctl -w kernel.unprivileged_userns_clone=0 (1 to enable again)
+./ghostbox -- unshare -u true  
+
+Audit Goal: The kernel should block the operation and return an error or kill the process.
+
+3. Filesystem & Mount Namespace Isolation Tests
+
+Auditors verify whether path blocklists (walls.c) and mount configurations successfully prevent escaping out of the sandbox home (/dev/shm/ghostbox_home).
+
+Inspect active mount points:
+Bash
+
+./ghostbox -- mount
+
+Audit Goal: Look for host directories bleeding into the sandbox. Verify that sensitive paths (like /sys, /proc, or host home directories) are either masked with a tmpfs, mounted read-only, or unshared entirely.
+
+Test Symlink/Hardlink Escapes:
+If write access is permitted in /dev/shm/ghostbox_home, an auditor will test if symbolic links can be crafted to reference host files outside the mount boundary:
+Bash
+
+./ghostbox -- ln -s /etc/shadow /dev/shm/ghostbox_home/leak
+./ghostbox -- cat /dev/shm/ghostbox_home/leak
+
+Audit Goal: The sandbox filesystem rules and virtual paths should prevent traversal or resolve relative links securely within the jail.
+
+4. Process & IPC Visibility Tests
+
+To ensure the payload cannot spy on or interact with other host applications:
+
+List running processes:
+Bash
+
+./ghostbox -- ps aux
+
+Audit Goal: Because of the PID namespace, the process list should be entirely isolated, showing only the payload itself (typically as PID 1) with no visibility into host processes.
+
+Check Shared Memory / IPC:
+Bash
+
+./ghostbox -- ipcs
+
+Audit Goal: IPC channels (message queues, shared memory segments, semaphores) should be empty or strictly isolated to the container namespace.
+
+./ghostbox -- bash
+echo "$(< /proc/net/dev)"
+
+./ghostbox -- python3 -c "import ctypes; ctypes.CDLL(None).syscall(165, 0, 0, 0, 0, 0)"
+
+./ghostbox -- python3 -c "import ctypes; ctypes.CDLL(None).syscall(155, 0, 0)"
+
+./ghostbox -- python3 -c "import ctypes; ctypes.CDLL(None).syscall(167, 0, 0)"
+
+./ghostbox -- python3 -c "import ctypes; ctypes.CDLL(None).syscall(246, 0, 0, 0, 0)"
+
+./ghostbox -- python3 -c "import ctypes; ctypes.CDLL(None).syscall(169, 0, 0, 0, 0)"
+
+./ghostbox -- python3 -c "import ctypes; ctypes.CDLL(None).syscall(101, 0, 0, 0, 0)"
+
+./ghostbox -- python3 -c "import ctypes; ctypes.CDLL(None).syscall(103, 3, 0, 0)"
+
+./ghostbox -- cat /etc/os-release
+
+./ghostbox -- cat /proc/cpuinfo
+
+./ghostbox -- ps aux
+
+
+./ghostbox -- free -h
+
+./ghostbox -- lscpu
+
+./ghostbox lspci
