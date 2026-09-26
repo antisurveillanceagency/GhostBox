@@ -20,7 +20,7 @@ if [ "$EUID" -ne 0 ]; then
 	apt-get install -y \
 	build-essential \
 	libcap-dev \
-	libseccomp-dev
+	libseccomp-dev slirp4netns \
 	
 	echo "[*] GhostBox Setup: Verifying core source files..."
 	required_files=("ghostbox.c" "walls.c" "blockage.c")
