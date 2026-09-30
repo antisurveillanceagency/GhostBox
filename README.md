@@ -41,4 +41,4 @@ gcc -O3 -static swapoff.c -o swapoff
 
 sudo ./swapoff -h (help commands)
 
-
+Please enable swapoff before you run ghostbox.
