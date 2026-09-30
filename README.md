@@ -18,7 +18,7 @@ GhostBox wraps target applications in multiple layers of kernel-enforced isolati
 ## Core Security Features
 
 * **Trusted Path Execution (TPE) & Binary Inspection:** Enforces execution strictly from approved system paths and performs byte-by-byte content comparison (`files_are_identical`) alongside ELF/shebang header checks to defeat binary copying and wrapper bypasses.
-* **1ms XDP / Signal Fail-Safe Killswitch:** Instantly engages on startup faults, corruption, or unexpected sandbox termination, triggering an immediate memory wipe and exit.
+* **Killswitch:** Instantly engages on startup faults, corruption, or unexpected sandbox termination, triggering an immediate memory wipe and exit.
 * **Async Signal Watcher & Pidfd Sweep:** Utilizes a secure `pipe2` watcher process and `pidfd` tracking (`pidfd_open` / `pidfd_send_signal`) to safely locate and terminate lingering network daemons on interruption or crash.
 * **Recursive RAM Wiper:** Automatically purges, unmounts, and zeroes out runtime files and allocated memory buffers upon execution, interruption, or exit.
 * **Memory Locking:** Locks process memory into RAM using `mlockall` to prevent sensitive data from hitting swap partitions.
