@@ -28,6 +28,17 @@ GhostBox wraps target applications in multiple layers of kernel-enforced isolati
 
 ### Compilation
 
+NEVER EVER RUN GHOSTBOX AS SUDO/ROOT
+
 Build GhostBox using `gcc` with required security and capability flags:
 ```bash
 gcc -O3 -static ghostbox.c walls.c blockage.c -lcap -lseccomp -o ghostbox
+
+gcc -O3 -static swapoff.c -o swapoff
+
+
+./ghostbox firefox (example usage)
+
+sudo ./swapoff -h (help commands)
+
+
