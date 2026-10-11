@@ -29,10 +29,6 @@
 #define AF_NETLINK 16
 #endif
 
-#ifndef NETLINK_SOCK_DIAG
-#define NETLINK_SOCK_DIAG 4
-#endif
-
 // Landlock MAC Kernel compatibility definitions
 #ifndef LANDLOCK_CREATE_RULESET_VERSION
 #define LANDLOCK_CREATE_RULESET_VERSION (1U << 0)
@@ -105,13 +101,27 @@ struct ghostbox_landlock_net_port_attr {
 #define LANDLOCK_ACCESS_FS_IOCTL_DEV (1ULL << 15)
 #endif
 
-// Blocked hardware, sensitive device nodes, and PCI paths enforcement reference
+// Blocked hardware, sensitive device nodes, and PCI / proc disclosure paths enforcement reference
 static const char * const BLOCKAGE_BLOCKED_PATHS[] = {
 	"/sys/bus/pci/devices",
 	"/sys/bus/pci/devices/0000:00:1f.0/config",
 	"/proc/bus/pci",
 	"/proc/cpuinfo",
 	"/proc/meminfo",
+	"/proc/maps",
+	"/proc/smaps",
+	"/proc/numa_maps",
+	"/proc/pagemap",
+	"/proc/kallsyms",
+	"/proc/stat",
+	"/proc/status",
+	"/proc/sched_debug",
+	"/proc/slabinfo",
+	"/proc/vmstat",
+	"/proc/zoneinfo",
+	"/proc/buddyinfo",
+	"/proc/consoles",
+	"/proc/kcore",
 	"/sys/devices",
 	"/proc/version",
 	"/proc/cmdline",
@@ -156,21 +166,10 @@ static int blockage_unlink_cb(const char *fpath, const struct stat *sb, int type
 
 // Secure scratch space cleanup helper preventing symlink attacks and tree traversal races
 static void safe_shm_cleanup(const char *path, int (*cb)(const char *, const struct stat *, int, struct FTW *)) {
-	struct stat st;
-	if (lstat(path, &st) == 0) {
-		if (S_ISLNK(st.st_mode)) {
-			unlink(path);
-		} else if (S_ISDIR(st.st_mode)) {
-			chmod(path, 0700);
-			nftw(path, cb, 64, FTW_DEPTH | FTW_PHYS);
-			remove(path);
-		} else {
-			unlink(path);
-		}
-	}
+	nftw(path, cb, 64, FTW_DEPTH | FTW_PHYS);
 }
 
-// Secure RAM wiper for blockage module with full directory unlinking and removal
+// Secure RAM wiper for blockage module with full directory unlinking, zero overwriting, and removal
 void blockage_secure_memory_wipe(void) {
 	sigset_t mask, oldmask;
 	sigfillset(&mask);
@@ -182,6 +181,11 @@ void blockage_secure_memory_wipe(void) {
 	umount2("/dev/shm/ghostbox_root", MNT_DETACH);
 	umount2("/dev/shm/ghostbox_resolv.conf", MNT_DETACH);
 	umount2("/dev/shm/ghostbox_cpuinfo", MNT_DETACH);
+	umount2("/dev/shm/ghostbox_osrelease", MNT_DETACH);
+	umount2("/dev/shm/ghostbox_version", MNT_DETACH);
+	umount2("/dev/shm/ghostbox_cmdline", MNT_DETACH);
+	umount2("/dev/shm/ghostbox_meminfo", MNT_DETACH);
+	umount2("/dev/shm/ghostbox_ostype", MNT_DETACH);
 	
 	safe_shm_cleanup("/dev/shm/ghostbox_root", blockage_unlink_cb);
 	safe_shm_cleanup("/dev/shm/ghostbox_home", blockage_unlink_cb);
@@ -189,6 +193,11 @@ void blockage_secure_memory_wipe(void) {
 	safe_shm_cleanup("/dev/shm/ghostbox_wayland", blockage_unlink_cb);
 	safe_shm_cleanup("/dev/shm/ghostbox_resolv.conf", blockage_unlink_cb);
 	safe_shm_cleanup("/dev/shm/ghostbox_cpuinfo", blockage_unlink_cb);
+	safe_shm_cleanup("/dev/shm/ghostbox_osrelease", blockage_unlink_cb);
+	safe_shm_cleanup("/dev/shm/ghostbox_version", blockage_unlink_cb);
+	safe_shm_cleanup("/dev/shm/ghostbox_cmdline", blockage_unlink_cb);
+	safe_shm_cleanup("/dev/shm/ghostbox_meminfo", blockage_unlink_cb);
+	safe_shm_cleanup("/dev/shm/ghostbox_ostype", blockage_unlink_cb);
 	
 	size_t alloc_size = 4 * 1024 * 1024;
 	void *p = mmap(NULL, alloc_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -201,12 +210,14 @@ void blockage_secure_memory_wipe(void) {
 		munmap(p, alloc_size);
 	}
 	
+	write(STDERR_FILENO, "\033[0m", 4);
+	
 	sigprocmask(SIG_SETMASK, &oldmask, NULL);
 }
 
 // Blockage Killswitch trigger
 void blockage_killswitch(void) {
-	fprintf(stderr, "[-] Blockage: Killswitch engaged due to hardening or Seccomp failure.\n");
+	write(STDERR_FILENO, "[-] Blockage: Killswitch engaged due to hardening or Seccomp failure.\n", 70);
 	blockage_secure_memory_wipe();
 	_exit(1);
 }
@@ -310,12 +321,12 @@ int apply_landlock_mac(void) {
 		}
 	}
 	
-	// 2. Full access for isolated RAM workspace (/dev/shm/ghostbox_home, /dev/shm/ghostbox_root, /dev/shm/ghostbox_pivot, /dev/shm/ghostbox_wayland and /dev/shm)
+	// 2. Full access for isolated RAM workspace (/dev/shm/ghostbox_home, /dev/shm/ghostbox_root, /dev/shm/ghostbox_pivot, /dev/shm/ghostbox_wayland and /dev/shm) EXCLUDING execution rights
 	static const char * const rw_workspace_paths[] = {
 		"/dev/shm/ghostbox_home", "/dev/shm/ghostbox_root", "/dev/shm/ghostbox_pivot", "/dev/shm/ghostbox_wayland", "/dev/shm", NULL
 	};
 	
-	__u64 rw_workspace_access = ruleset_attr.handled_access_fs;
+	__u64 rw_workspace_access = ruleset_attr.handled_access_fs & ~LANDLOCK_ACCESS_FS_EXECUTE;
 	
 	for (int i = 0; rw_workspace_paths[i] != NULL; i++) {
 		int path_fd = open(rw_workspace_paths[i], O_PATH | O_CLOEXEC);
@@ -431,141 +442,177 @@ int apply_seccomp_filter(void) {
 	
 	int rc = 0;
 	
-	// --- HIGH-RISK SYSCALL RESTRICTIONS (GRACEFUL FALLBACKS) ---
+	// --- ALL DENIAL / REJECTION RULES (PLACED AT THE VERY TOP BEFORE ANY ALLOW RULES) ---
 	
-	// Intercept ioctl with TIOCSTI (0x5412) to block terminal keystroke injection attacks
+	// 1. Intercept ioctl with TIOCSTI (0x5412) to block terminal keystroke injection attacks
 	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(ioctl), 1,
 		SCMP_CMP(1, SCMP_CMP_EQ, TIOCSTI)) < 0) rc = -1;
 	
-	// Intercept socket creation arguments to block AF_NETLINK sockets with NETLINK_SOCK_DIAG
-	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 2,
-		SCMP_CMP(0, SCMP_CMP_EQ, AF_NETLINK),
-						 SCMP_CMP(2, SCMP_CMP_EQ, NETLINK_SOCK_DIAG)) < 0) rc = -1;
-						 
-						 // Deny direct hardware port mapping and kernel ring-buffer access
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(iopl), 0) < 0) rc = -1;
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(ioperm), 0) < 0) rc = -1;
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(syslog), 0) < 0) rc = -1;
-						 
-						 // Force glibc clone3 to fall back to legacy clone()
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(ENOSYS), SCMP_SYS(clone3), 0) < 0) rc = -1;
-						 
-						 // Deny nested namespace manipulation cleanly
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(unshare), 0) < 0) rc = -1;
-						 
-						 // Deny execution domain switching, process tracing, memory inspection, and kernel modifications
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(personality), 0) < 0) rc = -1;
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(ptrace), 0) < 0) rc = -1;
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(kcmp), 0) < 0) rc = -1;
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(process_vm_readv), 0) < 0) rc = -1;
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(process_vm_writev), 0) < 0) rc = -1;
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(init_module), 0) < 0) rc = -1;
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(finit_module), 0) < 0) rc = -1;
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(delete_module), 0) < 0) rc = -1;
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(kexec_load), 0) < 0) rc = -1;
-						 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(kexec_file_load), 0) < 0) rc = -1;
-						 
-						 // Filter clone flags: block namespace instantiation while allowing thread creation
-						 const unsigned long ns_clone_flags[] = {
-							 CLONE_NEWUSER, CLONE_NEWNET, CLONE_NEWNS,
-							 CLONE_NEWPID,  CLONE_NEWIPC, CLONE_NEWUTS, CLONE_NEWCGROUP
-						 };
-						 for (size_t i = 0; i < sizeof(ns_clone_flags) / sizeof(ns_clone_flags[0]); i++) {
-							 if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(clone), 1,
-								 SCMP_CMP(0, SCMP_CMP_MASKED_EQ, ns_clone_flags[i], ns_clone_flags[i])) < 0) {
-								 rc = -1;
-							 break;
-								 }
-						 }
-						 
-						 // --- STANDARD DESKTOP APPLICATION ALLOWLIST ---
-						 
-						 const int syscalls[] = {
-							 SCMP_SYS(read), SCMP_SYS(write), SCMP_SYS(open), SCMP_SYS(openat), SCMP_SYS(close),
-							 SCMP_SYS(stat), SCMP_SYS(fstat), SCMP_SYS(lstat), SCMP_SYS(newfstatat), SCMP_SYS(statx),
-							 SCMP_SYS(lseek), SCMP_SYS(access), SCMP_SYS(faccessat), SCMP_SYS(unlink), SCMP_SYS(unlinkat),
-							 SCMP_SYS(rmdir), SCMP_SYS(pread64), SCMP_SYS(pwrite64), SCMP_SYS(readv), SCMP_SYS(writev),
-							 SCMP_SYS(readlink), SCMP_SYS(readlinkat), SCMP_SYS(getdents), SCMP_SYS(getdents64),
-							 SCMP_SYS(statfs), SCMP_SYS(fstatfs), SCMP_SYS(mkdirat), SCMP_SYS(rename), SCMP_SYS(renameat),
-							 SCMP_SYS(ftruncate), SCMP_SYS(flock), SCMP_SYS(fchmod), SCMP_SYS(fchown), SCMP_SYS(fchmodat),
-							 SCMP_SYS(fchownat), SCMP_SYS(fadvise64), SCMP_SYS(poll), SCMP_SYS(select), SCMP_SYS(ppoll),
-							 SCMP_SYS(pselect6), SCMP_SYS(pipe), SCMP_SYS(pipe2), SCMP_SYS(dup), SCMP_SYS(dup2),
-							 SCMP_SYS(dup3), SCMP_SYS(fcntl), SCMP_SYS(ioctl), SCMP_SYS(getcwd), SCMP_SYS(chdir),
-							 SCMP_SYS(clone), SCMP_SYS(fork), SCMP_SYS(vfork), SCMP_SYS(execve),
-							 SCMP_SYS(exit), SCMP_SYS(exit_group), SCMP_SYS(wait4), SCMP_SYS(kill), SCMP_SYS(tkill),
-							 SCMP_SYS(tgkill), SCMP_SYS(socket), SCMP_SYS(connect), SCMP_SYS(bind), SCMP_SYS(accept),
-							 SCMP_SYS(accept4), SCMP_SYS(getsockname), SCMP_SYS(getpeername), SCMP_SYS(getsockopt),
-							 SCMP_SYS(setsockopt), SCMP_SYS(sendto), SCMP_SYS(recvfrom), SCMP_SYS(sendmsg),
-							 SCMP_SYS(recvmsg), SCMP_SYS(socketpair), SCMP_SYS(shutdown), SCMP_SYS(getuid),
-							 SCMP_SYS(geteuid), SCMP_SYS(getgid), SCMP_SYS(getegid), SCMP_SYS(getpid), SCMP_SYS(getppid),
-							 SCMP_SYS(gettid), SCMP_SYS(getxattr), SCMP_SYS(lgetxattr), SCMP_SYS(fgetxattr),
-							 SCMP_SYS(listxattr), SCMP_SYS(flistxattr), SCMP_SYS(llistxattr), SCMP_SYS(capget), SCMP_SYS(capset),
-							 SCMP_SYS(setresuid), SCMP_SYS(setresgid), SCMP_SYS(shmget), SCMP_SYS(shmat), SCMP_SYS(shmdt), SCMP_SYS(shmctl), SCMP_SYS(mmap),
-							 SCMP_SYS(mprotect), SCMP_SYS(munmap), SCMP_SYS(mremap), SCMP_SYS(madvise), SCMP_SYS(brk),
-							 SCMP_SYS(rt_sigaction), SCMP_SYS(rt_sigprocmask), SCMP_SYS(rt_sigreturn), SCMP_SYS(futex),
-							 SCMP_SYS(set_tid_address), SCMP_SYS(set_robust_list), SCMP_SYS(arch_prctl), SCMP_SYS(prctl),
-							 SCMP_SYS(prlimit64), SCMP_SYS(getrlimit), SCMP_SYS(gettimeofday), SCMP_SYS(umask),
-							 SCMP_SYS(getrandom), SCMP_SYS(rseq), SCMP_SYS(clock_gettime), SCMP_SYS(sched_getaffinity),
-							 SCMP_SYS(sched_setaffinity), SCMP_SYS(sched_yield), SCMP_SYS(getgroups), SCMP_SYS(getresuid),
-							 SCMP_SYS(getresgid), SCMP_SYS(sysinfo), SCMP_SYS(getrusage), SCMP_SYS(times), SCMP_SYS(getcpu),
-							 SCMP_SYS(getpriority), SCMP_SYS(setpriority), SCMP_SYS(uname), SCMP_SYS(epoll_create1),
-							 SCMP_SYS(epoll_ctl), SCMP_SYS(epoll_wait), SCMP_SYS(epoll_pwait), SCMP_SYS(eventfd2),
-							 SCMP_SYS(signalfd4), SCMP_SYS(timerfd_create), SCMP_SYS(timerfd_settime), SCMP_SYS(fsync),
-							 SCMP_SYS(fdatasync), SCMP_SYS(restart_syscall), SCMP_SYS(inotify_init), SCMP_SYS(inotify_init1),
-							 SCMP_SYS(inotify_add_watch), SCMP_SYS(inotify_rm_watch), SCMP_SYS(clock_nanosleep),
-							 SCMP_SYS(sched_setscheduler), SCMP_SYS(sched_getscheduler), SCMP_SYS(memfd_create),
-							 SCMP_SYS(seccomp), SCMP_SYS(listen), SCMP_SYS(sendmmsg),
-							 SCMP_SYS(recvmmsg), SCMP_SYS(preadv), SCMP_SYS(pwritev), SCMP_SYS(preadv2), SCMP_SYS(pwritev2),
-							 SCMP_SYS(fallocate), SCMP_SYS(renameat2), SCMP_SYS(mlock), SCMP_SYS(munlock), SCMP_SYS(mbind),
-							 SCMP_SYS(set_mempolicy), SCMP_SYS(get_mempolicy), SCMP_SYS(clock_getres), SCMP_SYS(waitid),
-							 SCMP_SYS(setrlimit), SCMP_SYS(rt_sigpending), SCMP_SYS(rt_sigtimedwait), SCMP_SYS(rt_sigsuspend),
-							 SCMP_SYS(timerfd_gettime), SCMP_SYS(symlink), SCMP_SYS(symlinkat), SCMP_SYS(link),
-							 SCMP_SYS(linkat), SCMP_SYS(mkdir), SCMP_SYS(chmod), SCMP_SYS(chown), SCMP_SYS(lchown),
-							 SCMP_SYS(sched_getattr), SCMP_SYS(sched_setattr), SCMP_SYS(epoll_create), SCMP_SYS(eventfd),
-							 SCMP_SYS(signalfd), SCMP_SYS(sendfile), SCMP_SYS(msync), SCMP_SYS(mincore), SCMP_SYS(mlockall),
-							 SCMP_SYS(munlockall), SCMP_SYS(getpgrp), SCMP_SYS(getsid), SCMP_SYS(sched_rr_get_interval),
-							 SCMP_SYS(membarrier), SCMP_SYS(close_range), SCMP_SYS(copy_file_range), SCMP_SYS(splice),
-							 SCMP_SYS(tee), SCMP_SYS(vmsplice), SCMP_SYS(readahead), SCMP_SYS(sigaltstack), SCMP_SYS(setsid),
-							 SCMP_SYS(sched_getparam), SCMP_SYS(sched_get_priority_min), SCMP_SYS(sched_get_priority_max),
-							 SCMP_SYS(faccessat2), SCMP_SYS(semget), SCMP_SYS(semop), SCMP_SYS(semctl),
-							 SCMP_SYS(msgget), SCMP_SYS(msgsnd), SCMP_SYS(msgrcv), SCMP_SYS(truncate), SCMP_SYS(fchdir),
-							 SCMP_SYS(utimes), SCMP_SYS(utimensat), SCMP_SYS(futimesat), SCMP_SYS(clock_settime),
-							 SCMP_SYS(timer_create), SCMP_SYS(timer_settime), SCMP_SYS(timer_gettime), SCMP_SYS(timer_getoverrun),
-							 SCMP_SYS(timer_delete), SCMP_SYS(alarm), SCMP_SYS(setitimer), SCMP_SYS(getitimer),
-							 SCMP_SYS(setpgid), SCMP_SYS(setgroups), SCMP_SYS(get_robust_list), SCMP_SYS(io_setup),
-							 SCMP_SYS(io_destroy), SCMP_SYS(io_submit), SCMP_SYS(io_cancel), SCMP_SYS(io_getevents),
-							 SCMP_SYS(setxattr), SCMP_SYS(lsetxattr), SCMP_SYS(fsetxattr),
-							 SCMP_SYS(removexattr), SCMP_SYS(nanosleep), SCMP_SYS(pkey_alloc), SCMP_SYS(pkey_free),
-							 SCMP_SYS(pkey_mprotect), SCMP_SYS(pidfd_open), SCMP_SYS(pidfd_send_signal), SCMP_SYS(pidfd_getfd),
-							 SCMP_SYS(sync), SCMP_SYS(syncfs), SCMP_SYS(rt_tgsigqueueinfo),
-							 SCMP_SYS(rt_sigqueueinfo), SCMP_SYS(name_to_handle_at), SCMP_SYS(open_by_handle_at),
-							 SCMP_SYS(mq_open), SCMP_SYS(mq_unlink), SCMP_SYS(mq_timedsend), SCMP_SYS(mq_timedreceive),
-							 SCMP_SYS(mq_notify), SCMP_SYS(mq_getsetattr), SCMP_SYS(msgctl), SCMP_SYS(get_thread_area),
-							 SCMP_SYS(set_thread_area),
-							 SCMP_SYS(quotactl), SCMP_SYS(ioprio_get), SCMP_SYS(ioprio_set), SCMP_SYS(setfsuid),
-							 SCMP_SYS(setfsgid), SCMP_SYS(pivot_root), SCMP_SYS(umount2)
-						 };
-						 
-						 if (rc == 0) {
-							 for (size_t i = 0; i < sizeof(syscalls) / sizeof(syscalls[0]); i++) {
-								 if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, syscalls[i], 0) < 0) {
-									 rc = -1;
-									 break;
-								 }
-							 }
-						 }
-						 
-						 if (rc == 0) {
-							 rc = seccomp_load(ctx);
-						 }
-						 
-						 seccomp_release(ctx);
-						 
-						 if (rc < 0) {
-							 perror("GhostBox: Failed to apply seccomp filter via libseccomp");
-							 blockage_killswitch();
-							 return -1;
-						 }
-						 
-						 return 0;
+	// 2. Intercept socket creation arguments to block ALL AF_NETLINK sockets unconditionally
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 1,
+		SCMP_CMP(0, SCMP_CMP_EQ, AF_NETLINK)) < 0) rc = -1;
+	
+	// 4. Deny direct hardware port mapping and kernel ring-buffer access
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(iopl), 0) < 0) rc = -1;
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(ioperm), 0) < 0) rc = -1;
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(syslog), 0) < 0) rc = -1;
+	
+	// 5. Force glibc clone3 to fall back to legacy clone()
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(ENOSYS), SCMP_SYS(clone3), 0) < 0) rc = -1;
+	
+	// 6. Deny nested namespace manipulation cleanly
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(unshare), 0) < 0) rc = -1;
+	
+	// 7. Deny execution domain switching, process tracing, memory inspection, and kernel modifications
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(personality), 0) < 0) rc = -1;
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(ptrace), 0) < 0) rc = -1;
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(kcmp), 0) < 0) rc = -1;
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(process_vm_readv), 0) < 0) rc = -1;
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(process_vm_writev), 0) < 0) rc = -1;
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(init_module), 0) < 0) rc = -1;
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(finit_module), 0) < 0) rc = -1;
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(delete_module), 0) < 0) rc = -1;
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(kexec_load), 0) < 0) rc = -1;
+	if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(kexec_file_load), 0) < 0) rc = -1;
+	
+	// 8. Filter clone flags: block namespace instantiation while allowing thread creation
+	const unsigned long ns_clone_flags[] = {
+		CLONE_NEWUSER, CLONE_NEWNET, CLONE_NEWNS,
+		CLONE_NEWPID,  CLONE_NEWIPC, CLONE_NEWUTS, CLONE_NEWCGROUP
+	};
+	for (size_t i = 0; i < sizeof(ns_clone_flags) / sizeof(ns_clone_flags[0]); i++) {
+		if (seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(clone), 1,
+			SCMP_CMP(0, SCMP_CMP_MASKED_EQ, ns_clone_flags[i], ns_clone_flags[i])) < 0) {
+			rc = -1;
+		break;
+			}
+	}
+	
+	// --- EXPLICIT CONTROLLED ALLOW RULES FOR SAFE PROTECTION FLAGS ---
+	// Allow rules for mmap and mprotect (includes safe execution permissions PROT_EXEC and PROT_READ|PROT_EXEC)
+	const int safe_prots[] = {
+		PROT_NONE,
+		PROT_READ,
+		PROT_WRITE,
+		PROT_READ | PROT_WRITE,
+		PROT_EXEC,
+		PROT_READ | PROT_EXEC
+	};
+	for (size_t i = 0; i < sizeof(safe_prots) / sizeof(safe_prots[0]); i++) {
+		if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(mmap), 1,
+			SCMP_CMP(2, SCMP_CMP_EQ, safe_prots[i])) < 0) rc = -1;
+		if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(mprotect), 1,
+			SCMP_CMP(2, SCMP_CMP_EQ, safe_prots[i])) < 0) rc = -1;
+	}
+	
+	// Allow rules for pkey_mprotect restricted exclusively to non-executable memory flags
+	const int safe_pkey_prots[] = {
+		PROT_NONE,
+		PROT_READ,
+		PROT_WRITE,
+		PROT_READ | PROT_WRITE
+	};
+	for (size_t i = 0; i < sizeof(safe_pkey_prots) / sizeof(safe_pkey_prots[0]); i++) {
+		if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(pkey_mprotect), 1,
+			SCMP_CMP(2, SCMP_CMP_EQ, safe_pkey_prots[i])) < 0) rc = -1;
+	}
+	
+	// Explicitly allow socket creation ONLY for AF_INET, AF_INET6, and AF_UNIX domains
+	if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(socket), 1,
+		SCMP_CMP(0, SCMP_CMP_EQ, AF_INET)) < 0) rc = -1;
+	if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(socket), 1,
+		SCMP_CMP(0, SCMP_CMP_EQ, AF_INET6)) < 0) rc = -1;
+	if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(socket), 1,
+		SCMP_CMP(0, SCMP_CMP_EQ, AF_UNIX)) < 0) rc = -1;
+	
+	// --- STANDARD DESKTOP APPLICATION ALLOWLIST ---
+	
+	const int syscalls[] = {
+		SCMP_SYS(read), SCMP_SYS(write), SCMP_SYS(open), SCMP_SYS(openat), SCMP_SYS(close),
+		SCMP_SYS(stat), SCMP_SYS(fstat), SCMP_SYS(lstat), SCMP_SYS(newfstatat), SCMP_SYS(statx),
+		SCMP_SYS(lseek), SCMP_SYS(access), SCMP_SYS(faccessat), SCMP_SYS(unlink), SCMP_SYS(unlinkat),
+		SCMP_SYS(rmdir), SCMP_SYS(pread64), SCMP_SYS(pwrite64), SCMP_SYS(readv), SCMP_SYS(writev),
+		SCMP_SYS(readlink), SCMP_SYS(readlinkat), SCMP_SYS(getdents), SCMP_SYS(getdents64),
+		SCMP_SYS(statfs), SCMP_SYS(fstatfs), SCMP_SYS(mkdirat), SCMP_SYS(rename), SCMP_SYS(renameat),
+		SCMP_SYS(ftruncate), SCMP_SYS(flock), SCMP_SYS(fchmod), SCMP_SYS(fchown), SCMP_SYS(fchmodat),
+		SCMP_SYS(fchownat), SCMP_SYS(fadvise64), SCMP_SYS(poll), SCMP_SYS(select), SCMP_SYS(ppoll),
+		SCMP_SYS(pselect6), SCMP_SYS(pipe), SCMP_SYS(pipe2), SCMP_SYS(dup), SCMP_SYS(dup2),
+		SCMP_SYS(dup3), SCMP_SYS(fcntl), SCMP_SYS(ioctl), SCMP_SYS(getcwd), SCMP_SYS(chdir),
+		SCMP_SYS(clone), SCMP_SYS(fork), SCMP_SYS(vfork), SCMP_SYS(execve),
+		SCMP_SYS(exit), SCMP_SYS(exit_group), SCMP_SYS(wait4), SCMP_SYS(kill), SCMP_SYS(tkill),
+		SCMP_SYS(tgkill), SCMP_SYS(connect), SCMP_SYS(bind), SCMP_SYS(accept),
+		SCMP_SYS(accept4), SCMP_SYS(getsockname), SCMP_SYS(getpeername), SCMP_SYS(getsockopt),
+		SCMP_SYS(setsockopt), SCMP_SYS(sendto), SCMP_SYS(recvfrom), SCMP_SYS(sendmsg),
+		SCMP_SYS(recvmsg), SCMP_SYS(socketpair), SCMP_SYS(shutdown), SCMP_SYS(getuid),
+		SCMP_SYS(geteuid), SCMP_SYS(getgid), SCMP_SYS(getegid), SCMP_SYS(getpid), SCMP_SYS(getppid),
+		SCMP_SYS(gettid), SCMP_SYS(getxattr), SCMP_SYS(lgetxattr), SCMP_SYS(fgetxattr),
+		SCMP_SYS(listxattr), SCMP_SYS(flistxattr), SCMP_SYS(llistxattr), SCMP_SYS(capget), SCMP_SYS(capset),
+		SCMP_SYS(setresuid), SCMP_SYS(setresgid), SCMP_SYS(shmget), SCMP_SYS(shmat), SCMP_SYS(shmdt), SCMP_SYS(shmctl), SCMP_SYS(mmap),
+		SCMP_SYS(mprotect), SCMP_SYS(munmap), SCMP_SYS(mremap), SCMP_SYS(madvise), SCMP_SYS(brk),
+		SCMP_SYS(rt_sigaction), SCMP_SYS(rt_sigprocmask), SCMP_SYS(rt_sigreturn), SCMP_SYS(futex),
+		SCMP_SYS(set_tid_address), SCMP_SYS(set_robust_list), SCMP_SYS(arch_prctl), SCMP_SYS(prctl),
+		SCMP_SYS(prlimit64), SCMP_SYS(getrlimit), SCMP_SYS(gettimeofday), SCMP_SYS(umask),
+		SCMP_SYS(getrandom), SCMP_SYS(rseq), SCMP_SYS(clock_gettime), SCMP_SYS(sched_getaffinity),
+		SCMP_SYS(sched_setaffinity), SCMP_SYS(sched_yield), SCMP_SYS(getgroups), SCMP_SYS(getresuid),
+		SCMP_SYS(getresgid), SCMP_SYS(sysinfo), SCMP_SYS(getrusage), SCMP_SYS(times), SCMP_SYS(getcpu),
+		SCMP_SYS(getpriority), SCMP_SYS(setpriority), SCMP_SYS(uname), SCMP_SYS(epoll_create1),
+		SCMP_SYS(epoll_ctl), SCMP_SYS(epoll_wait), SCMP_SYS(epoll_pwait), SCMP_SYS(eventfd2),
+		SCMP_SYS(signalfd4), SCMP_SYS(timerfd_create), SCMP_SYS(timerfd_settime), SCMP_SYS(fsync),
+		SCMP_SYS(fdatasync), SCMP_SYS(restart_syscall), SCMP_SYS(inotify_init), SCMP_SYS(inotify_init1),
+		SCMP_SYS(inotify_add_watch), SCMP_SYS(inotify_rm_watch), SCMP_SYS(clock_nanosleep),
+		SCMP_SYS(sched_setscheduler), SCMP_SYS(sched_getscheduler), SCMP_SYS(memfd_create),
+		SCMP_SYS(seccomp), SCMP_SYS(listen), SCMP_SYS(sendmmsg),
+		SCMP_SYS(recvmmsg), SCMP_SYS(preadv), SCMP_SYS(pwritev), SCMP_SYS(preadv2), SCMP_SYS(pwritev2),
+		SCMP_SYS(fallocate), SCMP_SYS(renameat2), SCMP_SYS(mlock), SCMP_SYS(munlock), SCMP_SYS(mbind),
+		SCMP_SYS(set_mempolicy), SCMP_SYS(get_mempolicy), SCMP_SYS(clock_getres), SCMP_SYS(waitid),
+		SCMP_SYS(setrlimit), SCMP_SYS(rt_sigpending), SCMP_SYS(rt_sigtimedwait), SCMP_SYS(rt_sigsuspend),
+		SCMP_SYS(timerfd_gettime), SCMP_SYS(symlink), SCMP_SYS(symlinkat), SCMP_SYS(link),
+		SCMP_SYS(linkat), SCMP_SYS(mkdir), SCMP_SYS(chmod), SCMP_SYS(chown), SCMP_SYS(lchown),
+		SCMP_SYS(sched_getattr), SCMP_SYS(sched_setattr), SCMP_SYS(epoll_create), SCMP_SYS(eventfd),
+		SCMP_SYS(signalfd), SCMP_SYS(sendfile), SCMP_SYS(msync), SCMP_SYS(mincore), SCMP_SYS(mlockall),
+		SCMP_SYS(munlockall), SCMP_SYS(getpgrp), SCMP_SYS(getsid), SCMP_SYS(sched_rr_get_interval),
+		SCMP_SYS(membarrier), SCMP_SYS(close_range), SCMP_SYS(copy_file_range), SCMP_SYS(splice),
+		SCMP_SYS(tee), SCMP_SYS(vmsplice), SCMP_SYS(readahead), SCMP_SYS(sigaltstack), SCMP_SYS(setsid),
+		SCMP_SYS(sched_getparam), SCMP_SYS(sched_get_priority_min), SCMP_SYS(sched_get_priority_max),
+		SCMP_SYS(faccessat2), SCMP_SYS(semget), SCMP_SYS(semop), SCMP_SYS(semctl),
+		SCMP_SYS(msgget), SCMP_SYS(msgsnd), SCMP_SYS(msgrcv), SCMP_SYS(truncate), SCMP_SYS(fchdir),
+		SCMP_SYS(utimes), SCMP_SYS(utimensat), SCMP_SYS(futimesat), SCMP_SYS(clock_settime),
+		SCMP_SYS(timer_create), SCMP_SYS(timer_settime), SCMP_SYS(timer_gettime), SCMP_SYS(timer_getoverrun),
+		SCMP_SYS(timer_delete), SCMP_SYS(alarm), SCMP_SYS(setitimer), SCMP_SYS(getitimer),
+		SCMP_SYS(setpgid), SCMP_SYS(setgroups), SCMP_SYS(get_robust_list), SCMP_SYS(io_setup),
+		SCMP_SYS(io_destroy), SCMP_SYS(io_submit), SCMP_SYS(io_cancel), SCMP_SYS(io_getevents),
+		SCMP_SYS(setxattr), SCMP_SYS(lsetxattr), SCMP_SYS(fsetxattr),
+		SCMP_SYS(removexattr), SCMP_SYS(nanosleep), SCMP_SYS(pkey_alloc), SCMP_SYS(pkey_free),
+		SCMP_SYS(pidfd_open), SCMP_SYS(pidfd_send_signal), SCMP_SYS(pidfd_getfd),
+		SCMP_SYS(sync), SCMP_SYS(syncfs), SCMP_SYS(rt_tgsigqueueinfo),
+		SCMP_SYS(rt_sigqueueinfo), SCMP_SYS(name_to_handle_at), SCMP_SYS(open_by_handle_at),
+		SCMP_SYS(mq_open), SCMP_SYS(mq_unlink), SCMP_SYS(mq_timedsend), SCMP_SYS(mq_timedreceive),
+		SCMP_SYS(mq_notify), SCMP_SYS(mq_getsetattr), SCMP_SYS(msgctl), SCMP_SYS(get_thread_area),
+		SCMP_SYS(set_thread_area),
+		SCMP_SYS(quotactl), SCMP_SYS(ioprio_get), SCMP_SYS(ioprio_set), SCMP_SYS(setfsuid),
+		SCMP_SYS(setfsgid), SCMP_SYS(pivot_root), SCMP_SYS(umount2)
+	};
+	
+	if (rc == 0) {
+		for (size_t i = 0; i < sizeof(syscalls) / sizeof(syscalls[0]); i++) {
+			if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, syscalls[i], 0) < 0) {
+				rc = -1;
+				break;
+			}
+		}
+	}
+	
+	if (rc == 0) {
+		rc = seccomp_load(ctx);
+	}
+	
+	seccomp_release(ctx);
+	
+	if (rc < 0) {
+		perror("GhostBox: Failed to apply seccomp filter via libseccomp");
+		blockage_killswitch();
+		return -1;
+	}
+	
+	return 0;
 }
